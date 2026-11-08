@@ -1,0 +1,26 @@
+# 依赖与构建产物
+node_modules/
+__pycache__/
+*.py[cod]
+dist/
+build/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# 日志与临时文件
+*.log
+*.tmp
+*.bak
+*.bak.*
+
+# 安装脚本产生的备份
+builda-offline-h5.bak.*
+
+# 游戏项目注入产物（本仓库不该出现）
+.builda-agent/
