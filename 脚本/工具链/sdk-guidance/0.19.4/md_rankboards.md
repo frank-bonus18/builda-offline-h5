@@ -1,0 +1,57 @@
+<!-- builda-sdk-version: 0.19.4 -->
+# Leaderboard publish configuration
+
+Leaderboard configuration lives in `builda.publish.json` at the project root, under the field `rankBoards`. It is part of the game draft: after creating or updating the draft, the user must still republish in the Builda App and pass review before the configuration takes effect for live players.
+
+## Configuration example
+
+```json
+{
+  "rankBoards": [
+    {
+      "rankId": "high_score",
+      "displayName": "High Score",
+      "sortType": "desc",
+      "cycleType": "forever",
+      "minScore": 0,
+      "maxScore": 9999999999
+    }
+  ]
+}
+```
+
+All six fields of every board must be filled in explicitly:
+
+| Field | Constraint |
+|---|---|
+| `rankId` | Stable and unique within the game; the global contract is `[A-Za-z0-9_-]`, 1–64 bytes; characters such as `.`, `:`, `+`, `/` are invalid |
+| `displayName` | Non-empty UTF-8, at most 64 bytes |
+| `sortType` | `asc` lower is better; `desc` higher is better |
+| `cycleType` | `day`, `week`, `month`, `forever` |
+| `minScore` | Minimum score allowed for submission, inclusive |
+| `maxScore` | Maximum score allowed for submission, inclusive, and must not be less than `minScore` |
+
+At most 100 boards per game. `minScore` and `maxScore` must be integers within the Builda-supported range `[-9999999999, 9999999999]`.
+
+## Update semantics
+
+`rankBoards` is a full configuration, not a partial patch:
+
+- Omit `rankBoards`: keep the draft's existing leaderboards unchanged. Ordinary bundle or copy updates should use this form.
+- `"rankBoards": []`: clear all leaderboards.
+- Non-empty array: fully replace the draft's leaderboards with this array; even when changing a single board, submit the final complete array.
+
+Do not use `null` to express intent. Omit the field to keep; use an empty array to clear.
+
+## Effect on historical scores
+
+- Changing only `displayName`: the board's historical scores are kept after review and release.
+- Changing `sortType`, `cycleType`, `minScore` or `maxScore`: the board's historical scores are cleared after review and release.
+- Removing a `rankId`: the board is disabled and cleared after review and release.
+- Reusing the same `rankId` after removal: treated as a new board; old scores are not restored.
+
+Any change that clears scores must first be explained to the user, with their explicit confirmation. A successful draft create or update does not mean it is live; the user must still complete release and review in the Builda App.
+
+## Game runtime API
+
+Once boards are published and in effect, the game reads and writes them via the Builda SDK: `Builda.rank.submitScore(rankId, score)` submits an integer score (the host validates the range against this configuration and keeps each player's best per cycle according to `sortType`), and `Builda.rank.getRankList(rankId, {limit})` reads the current cycle's board and your own rank. The Godot equivalents are `rank_submit_score` / `rank_get_list`. Runtime API details are in `./md_sdk_rank.md`. The local mock does not validate this configuration; real semantics are verified via draft playtesting in the Builda App runtime.

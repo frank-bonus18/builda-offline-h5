@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Builda Dev Shell</title>
+<!--
+  Builda Dev Shell (mock test shell, v0.19.4)
+  Local acceptance entry for builda dev: loads an H5 build (Godot Web / pixi / phaser, etc.) in a phone-frame iframe, simulating the real-device host's
+  landscape/portrait, notch safe areas, and platform capsule buttons (including the room members button shown after entering a multiplayer room); the mock SDK (when builda_mock_shell=1)
+  delegates pay/ad modals to this page via postMessage, simulating host App panels over the WebView;
+  the "Background" button simulates host App foreground/background events (events.appVisibility), and the capsule pause panel simulates events.pausePanel.
+  This file is installed into the project together with the mock SDK by sdk install (addons/builda/web/), and ships with the same
+  postMessage protocol version as builda-sdk.js; do not edit it by hand in game projects.
+-->
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: #17181c; color: #e8e8ea; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #202127; border-bottom: 1px solid #33343c; flex-wrap: wrap; }
+  header strong { font-size: 14px; }
+  header .meta { font-size: 12px; color: #9a9ba3; }
+  header .spacer { flex: 1; }
+  button.ctl { padding: 6px 14px; border-radius: 8px; border: 1px solid #44454e; background: #2a2b32; color: #d6d7dc; font-size: 13px; cursor: pointer; }
+  button.ctl[aria-pressed="true"] { background: #2563eb; border-color: #2563eb; color: #fff; }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  #stage { transform-origin: center center; }
+  #phone { position: relative; background: #000; border: 10px solid #2c2d34; border-radius: 44px; box-shadow: 0 18px 60px rgba(0,0,0,.5); }
+  #screen { position: absolute; inset: 0; border-radius: 34px; overflow: hidden; background: #000; }
+  #game { width: 100%; height: 100%; border: 0; display: block; background: #000; }
+  /* Notch and bottom Home indicator: purely visual layer; safe-area values are injected into the SDK via URL params */
+  #notch { position: absolute; background: #000; border-radius: 16px; z-index: 30; display: none; pointer-events: none; }
+  #homebar { position: absolute; background: rgba(255,255,255,.75); border-radius: 3px; z-index: 30; display: none; pointer-events: none; }
+  .portrait #notch { top: 8px; left: 50%; transform: translateX(-50%); width: 120px; height: 30px; }
+  .portrait #homebar { bottom: 8px; left: 50%; transform: translateX(-50%); width: 130px; height: 5px; }
+  .landscape #notch { left: 8px; top: 50%; transform: translateY(-50%); width: 30px; height: 120px; }
+  .landscape #homebar { bottom: 6px; left: 50%; transform: translateX(-50%); width: 110px; height: 5px; }
+  /* Platform capsule buttons: position matches the mock SDK capsuleMenuRect() formula (top=safeArea.top+6, right 10, full strip 160×32)
+     = an 80×32 settings/exit capsule on the right + 8 gap + a 32×32 round chat button + 8 gap + leftmost a 32×32 room members button,
+     same as the real-device host layout; the members button shows only after entering a multiplayer room, but the rect always reserves the full 160 */
+  #capsule, #chat-capsule, #room-capsule { position: absolute; height: 32px; z-index: 40; display: flex; border-radius: 16px; background: rgba(20,20,20,.55); border: 1px solid rgba(255,255,255,.28); color: #fff; cursor: pointer; user-select: none; }
+  #capsule { width: 80px; }
+  #capsule span, #chat-capsule span, #room-capsule span { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  #capsule span:first-child { border-right: 1px solid rgba(255,255,255,.25); }
+  #chat-capsule, #room-capsule { width: 32px; }
+  #room-capsule { display: none; }
+  /* Safe-area guides (optional): semi-transparent marks for the four insets */
+  .guide { position: absolute; background: rgba(37,99,235,.28); z-index: 20; display: none; pointer-events: none; }
+  /* Shell modal layer: pay/ad/pause pages all render above the phone screen, simulating host native panels */
+  .overlay { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; }
+  .panel { background: #fff; color: #222; border-radius: 14px; padding: 20px 22px; min-width: 240px; max-width: 82%; text-align: center; box-shadow: 0 10px 36px rgba(0,0,0,.4); }
+  .panel h2 { margin: 0 0 8px; font-size: 16px; }
+  .panel p { margin: 0 0 16px; font-size: 13px; color: #666; word-break: break-all; }
+  .panel .row { display: flex; gap: 12px; justify-content: center; }
+  .panel button { padding: 8px 20px; border-radius: 8px; border: 0; cursor: pointer; font-size: 14px; }
+  .panel button.primary { background: #16a34a; color: #fff; }
+  .panel button.plain { background: #e5e7eb; color: #374151; }
+  footer { padding: 6px 14px; font-size: 12px; color: #83848c; background: #202127; border-top: 1px solid #33343c; }
+  footer code { color: #b9bac2; }
+</style>
+</head>
+<body>
+<header>
+  <strong id="shell-name">Builda Dev Shell</strong>
+  <span class="meta" id="meta"></span>
+  <span class="spacer"></span>
+  <button class="ctl" id="btn-orient" aria-pressed="false">Landscape</button>
+  <button class="ctl" id="btn-notch" aria-pressed="false">Notch</button>
+  <button class="ctl" id="btn-guides" aria-pressed="false">Safe-area guides</button>
+  <button class="ctl" id="btn-mic-deny" aria-pressed="false" title="Simulate the user denying microphone permission (takes effect after reloading the game) to test the no-mic fallback path">Deny mic</button>
+  <button class="ctl" id="btn-mic-int" aria-pressed="false" title="Simulate capture interruption and recovery from an incoming call / going to background (0012 §3.3); does not reload the game">Mic interrupt</button>
+  <button class="ctl" id="btn-app-bg" aria-pressed="false" title="Simulate the host App being minimized / sent to background (events.appVisibility, source:host); click again to return to foreground; does not reload the game">Background</button>
+  <button class="ctl" id="btn-reload">Reload game</button>
+</header>
+<main>
+  <div id="stage">
+    <div id="phone">
+      <div id="screen">
+        <iframe id="game" title="game" allow="autoplay; fullscreen" allowfullscreen></iframe>
+        <div class="guide" id="guide-top"></div>
+        <div class="guide" id="guide-right"></div>
+        <div class="guide" id="guide-bottom"></div>
+        <div class="guide" id="guide-left"></div>
+        <div id="room-capsule" title="Platform room members button (shown after entering a multiplayer room; opens the host room members page; the game must not build its own)"><span>👥</span></div>
+        <div id="chat-capsule" title="Platform chat button (opens the host chat page; the game must not build its own)"><span>💬</span></div>
+        <div id="capsule" title="Platform capsule button (shared settings / pause-exit entry)"><span>···</span><span>◉</span></div>
+      </div>
+      <div id="notch"></div>
+      <div id="homebar"></div>
+    </div>
+  </div>
+</main>
+<footer id="shell-footer">
+  Switch mock identity: append <code>&amp;builda_mock_player=&lt;id&gt;&amp;builda_mock_name=&lt;name&gt;</code> to this page's URL (reloads automatically). SDK v0.19.4
+</footer>
+<script>
+(function () {
+  var params = new URLSearchParams(window.location.search || "");
+  // Shell text follows the browser's preferred language: Chinese for Chinese browsers, otherwise keep the page's English (unrelated to builda_mock_lang).
+  var uiZh = /^zh\b/i.test(String((navigator.languages && navigator.languages[0]) || navigator.language || ""));
+  function tr(zh, en) { return uiZh ? zh : en; }
+  if (uiZh) {
+    document.documentElement.lang = "zh-CN";
+    document.title = "Builda 测试外壳";
+    [
+      ["shell-name", "Builda 测试外壳"], ["btn-orient", "横屏"], ["btn-notch", "刘海屏"], ["btn-guides", "安全区参考线"],
+      ["btn-mic-deny", "拒绝麦克风", "模拟用户拒绝麦克风授权（重载游戏生效），测无麦降级路径"],
+      ["btn-mic-int", "麦克风中断", "模拟来电/切后台的采集中断与恢复（0012 §3.3），不重载游戏"],
+      ["btn-app-bg", "切后台", "模拟宿主 App 最小化/切后台（events.appVisibility，source:host），再点一次回前台；不重载游戏"],
+      ["btn-reload", "重载游戏"],
+      ["room-capsule", null, "平台联机成员按钮（进入联机房间后显示，打开宿主房间成员页，游戏不要自己做）"],
+      ["chat-capsule", null, "平台聊天按钮（打开宿主聊天页，游戏不要自己做）"],
+      ["capsule", null, "平台胶囊按钮（通用设置/暂停退出入口）"]
+    ].forEach(function (item) {
+      var el = document.getElementById(item[0]);
+      if (item[1] !== null) el.textContent = item[1];
+      if (item[2]) el.title = item[2];
+    });
+    var footer = document.getElementById("shell-footer");
+    footer.replaceChildren("换 mock 身份：给本页 URL 追加 ", footer.querySelector("code"), "（切换后自动重载）。SDK v0.19.4");
+  }
+  var gameId = params.get("gameId") || "local-game";
+  var playerId = params.get("builda_mock_player") || "local-player";
+
+  // custom values injected by --safearea apply only to the portrait notch; if given, the notch is on by default
+  var custom = (params.get("builda_mock_safearea") || "").split(",").map(parseFloat);
+  var customOk = custom.length === 4 && custom.every(function (v) { return isFinite(v) && v >= 0; });
+
+  var PORTRAIT = { w: 390, h: 844, sa: [47, 0, 34, 0] };
+  var LANDSCAPE = { w: 844, h: 390, sa: [0, 47, 21, 47] };
+  var landscape = false;
+  var notch = customOk;
+  var guides = false;
+  var micDeny = params.get("builda_mock_mic") === "deny";
+  var micInterrupted = false;
+  var appBackground = false;
+
+  var stage = document.getElementById("stage");
+  var phone = document.getElementById("phone");
+  var screenEl = document.getElementById("screen");
+  var frame = document.getElementById("game");
+  var capsule = document.getElementById("capsule");
+  var chatCapsule = document.getElementById("chat-capsule");
+  var roomCapsule = document.getElementById("room-capsule");
+  var mockRoomId = ""; // multiplayer room the game is currently in (synced by the mock SDK via builda:mock-room)
+
+  function device() { return landscape ? LANDSCAPE : PORTRAIT; }
+  function safeArea() {
+    if (!notch) return [0, 0, 0, 0];
+    if (!landscape && customOk) return custom;
+    return device().sa;
+  }
+
+  function gameSrc() {
+    var q = new URLSearchParams(window.location.search || "");
+    q.set("gameId", gameId);
+    q.set("builda_mock_shell", "1"); // tell the mock SDK: delegate pay/ad modals to the shell for rendering
+    q.delete("builda_mock_mic");
+    if (micDeny) q.set("builda_mock_mic", "deny"); // simulate the user denying microphone permission
+    q.delete("builda_mock_safearea");
+    var sa = safeArea();
+    if (sa.some(function (v) { return v > 0; })) q.set("builda_mock_safearea", sa.join(","));
+    return "/index.html?" + q.toString();
+  }
+
+  function fit() {
+    var d = device();
+    var frameW = d.w + 20, frameH = d.h + 20;
+    var pad = 24;
+    var main = document.querySelector("main");
+    var s = Math.min(1, (main.clientWidth - pad) / frameW, (main.clientHeight - pad) / frameH);
+    stage.style.transform = "scale(" + s + ")";
+  }
+
+  function render(reload) {
+    var d = device();
+    phone.style.width = (d.w + 20) + "px";
+    phone.style.height = (d.h + 20) + "px";
+    phone.className = landscape ? "landscape" : "portrait";
+    document.getElementById("notch").style.display = notch ? "block" : "none";
+    document.getElementById("homebar").style.display = notch ? "block" : "none";
+    var sa = safeArea();
+    capsule.style.top = (sa[0] + 6) + "px";
+    capsule.style.right = "10px";
+    // the chat button is left of the settings/exit capsule: right = 10 + 80 + 8 gap
+    chatCapsule.style.top = (sa[0] + 6) + "px";
+    chatCapsule.style.right = "98px";
+    // the room members button is left of the chat button: right = 98 + 32 + 8; shown only inside a multiplayer room
+    roomCapsule.style.top = (sa[0] + 6) + "px";
+    roomCapsule.style.right = "138px";
+    roomCapsule.style.display = mockRoomId ? "flex" : "none";
+    var g = {
+      top: document.getElementById("guide-top"),
+      right: document.getElementById("guide-right"),
+      bottom: document.getElementById("guide-bottom"),
+      left: document.getElementById("guide-left")
+    };
+    g.top.style.cssText = "top:0;left:0;right:0;height:" + sa[0] + "px;display:" + (guides && sa[0] ? "block" : "none");
+    g.right.style.cssText = "top:0;right:0;bottom:0;width:" + sa[1] + "px;display:" + (guides && sa[1] ? "block" : "none");
+    g.bottom.style.cssText = "bottom:0;left:0;right:0;height:" + sa[2] + "px;display:" + (guides && sa[2] ? "block" : "none");
+    g.left.style.cssText = "top:0;left:0;bottom:0;width:" + sa[3] + "px;display:" + (guides && sa[3] ? "block" : "none");
+    document.getElementById("meta").textContent =
+      gameId + " · " + playerId + " · " + (landscape ? tr("横屏", "landscape") : tr("竖屏", "portrait")) + tr(" · 安全区 ", " · safe area ") + sa.join(",");
+    document.getElementById("btn-orient").setAttribute("aria-pressed", String(landscape));
+    document.getElementById("btn-notch").setAttribute("aria-pressed", String(notch));
+    document.getElementById("btn-guides").setAttribute("aria-pressed", String(guides));
+    document.getElementById("btn-mic-deny").setAttribute("aria-pressed", String(micDeny));
+    if (reload) {
+      micInterrupted = false; // after reload the in-game mic state resets, so reset the interruption switch too
+      document.getElementById("btn-mic-int").setAttribute("aria-pressed", "false");
+      appBackground = false; // after reload the SDK visibility state resets (initially foreground), so reset the switch too
+      document.getElementById("btn-app-bg").setAttribute("aria-pressed", "false");
+      frame.src = gameSrc();
+    }
+    fit();
+  }
+
+  // Shell modal layer: panels render above the phone screen (simulating host App native panels over the WebView)
+  function showPanel(title, detail, buttons) {
+    var overlay = document.createElement("div");
+    overlay.className = "overlay";
+    var panel = document.createElement("div");
+    panel.className = "panel";
+    var h = document.createElement("h2");
+    h.textContent = title;
+    var p = document.createElement("p");
+    p.textContent = detail;
+    var row = document.createElement("div");
+    row.className = "row";
+    buttons.forEach(function (btn) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = btn.primary ? "primary" : "plain";
+      b.textContent = btn.label;
+      b.addEventListener("click", function () {
+        overlay.remove();
+        btn.onClick();
+      });
+      row.appendChild(b);
+    });
+    panel.appendChild(h);
+    panel.appendChild(p);
+    panel.appendChild(row);
+    overlay.appendChild(panel);
+    screenEl.appendChild(overlay);
+  }
+
+  // pay/ad modals delegated by the mock SDK (protocol: see mockDialog in builda-sdk.js)
+  window.addEventListener("message", function (ev) {
+    if (ev.origin !== window.location.origin) return;
+    var msg = ev.data;
+    if (!msg || msg.type !== "builda:mock-dialog" || ev.source !== frame.contentWindow) return;
+    function reply(success) {
+      frame.contentWindow.postMessage(
+        { type: "builda:mock-dialog-result", id: msg.id, success: success },
+        window.location.origin
+      );
+    }
+    showPanel(String(msg.title || tr("Mock 面板", "Mock panel")), String(msg.detail || ""), [
+      { label: tr("成功", "Success"), primary: true, onClick: function () { reply(true); } },
+      { label: tr("失败", "Failure"), onClick: function () { reply(false); } }
+    ]);
+  });
+
+  // Simulate host-pushed onAppEvent (protocol builda:mock-app; action names match real-device cmds; see events in builda-sdk.js)
+  function mockAppEvent(action) {
+    frame.contentWindow.postMessage({ type: "builda:mock-app", action: action }, window.location.origin);
+  }
+
+  // Capsule button = mock of the platform general settings/pause-exit entry. On real devices pausePanelShow is pushed before the "Paused" panel pops up,
+  // and pausePanelHide after "Continue game" closes it (events.pausePanel); "Restart game" equals a real exit and pushes no hide.
+  capsule.addEventListener("click", function () {
+    mockAppEvent("pausePanelShow");
+    showPanel(tr("暂停 · ", "Paused · ") + gameId, tr("模拟平台通用暂停/退出页面（真机由宿主 App 提供，游戏不要自己做）。",
+      "Simulates the platform's shared pause/exit page (provided by the host App on real devices; the game must not build its own)."), [
+      { label: tr("继续游戏", "Continue game"), primary: true, onClick: function () { mockAppEvent("pausePanelHide"); } },
+      { label: tr("重开游戏", "Restart game"), onClick: function () { frame.src = gameSrc(); } }
+    ]);
+  });
+
+  // Chat button = mock of the host chat page. On real devices it opens the host's built-in chat page (Channel tab + Friends tab),
+  // coexisting with events.chatMessage without interference; not a pause panel, pushes no pausePanel / appVisibility.
+  chatCapsule.addEventListener("click", function () {
+    showPanel(tr("聊天 · ", "Chat · ") + gameId, tr("模拟平台聊天页（真机由宿主 App 提供，游戏不要自己做）。不推送任何宿主事件。",
+      "Simulates the platform chat page (provided by the host App on real devices; the game must not build its own). No host events are pushed."), [
+      { label: tr("关闭", "Close"), primary: true, onClick: function () {} }
+    ]);
+  });
+
+  // Room members button = mock of the host room members page (online/seat overview + member list + invite friends). On real devices it shows only after the game enters
+  // a multiplayer room and hides after leaving (the rect is always reserved); clicking behaves like the chat button and pushes no host events.
+  roomCapsule.addEventListener("click", function () {
+    showPanel(tr("房间成员 · ", "Room members · ") + gameId, tr("模拟平台房间成员页（真机由宿主 App 提供，游戏不要自己做）。当前房间：" + mockRoomId + "。不推送任何宿主事件。",
+      "Simulates the platform room members page (provided by the host App on real devices; the game must not build its own). Current room: " + mockRoomId + ". No host events are pushed."), [
+      { label: tr("关闭", "Close"), primary: true, onClick: function () {} }
+    ]);
+  });
+
+  // The mock SDK syncs multiplayer room state (protocol builda:mock-room, see roomMock in builda-sdk.js): show the members button when in a room,
+  // sync on leaving/switching rooms; room state resets after the game page reloads (same as reloading the game page on real devices).
+  window.addEventListener("message", function (ev) {
+    if (ev.origin !== window.location.origin) return;
+    var msg = ev.data;
+    if (!msg || msg.type !== "builda:mock-room" || ev.source !== frame.contentWindow) return;
+    mockRoomId = String(msg.roomId || "");
+    roomCapsule.style.display = mockRoomId ? "flex" : "none";
+  });
+  frame.addEventListener("load", function () {
+    mockRoomId = "";
+    roomCapsule.style.display = "none";
+  });
+
+  document.getElementById("btn-orient").addEventListener("click", function () { landscape = !landscape; render(true); });
+  document.getElementById("btn-notch").addEventListener("click", function () { notch = !notch; render(true); });
+  document.getElementById("btn-guides").addEventListener("click", function () { guides = !guides; render(false); });
+  document.getElementById("btn-mic-deny").addEventListener("click", function () { micDeny = !micDeny; render(true); });
+  // Mic interruption simulation (protocol builda:mock-mic, see builda-sdk.js): on = simulate incoming call/session preemption,
+  // off = simulate auto-rebuild on returning to foreground; does not reload the game, which is exactly what verifies the game's handling of read().state.
+  document.getElementById("btn-mic-int").addEventListener("click", function () {
+    micInterrupted = !micInterrupted;
+    document.getElementById("btn-mic-int").setAttribute("aria-pressed", String(micInterrupted));
+    frame.contentWindow.postMessage(
+      { type: "builda:mock-mic", action: micInterrupted ? "interrupt" : "recover" },
+      window.location.origin
+    );
+  });
+  // App background/foreground simulation (protocol builda:mock-app, see events in builda-sdk.js): simulates the host pushing via onAppEvent
+  // background/foreground; the game's Builda.events.on("appVisibility") receives source:"host";
+  // does not reload the game, which is exactly what verifies pause/resume logic. Browser tab switching takes the source:"browser" path.
+  document.getElementById("btn-app-bg").addEventListener("click", function () {
+    appBackground = !appBackground;
+    document.getElementById("btn-app-bg").setAttribute("aria-pressed", String(appBackground));
+    mockAppEvent(appBackground ? "background" : "foreground");
+  });
+  document.getElementById("btn-reload").addEventListener("click", function () { render(true); });
+  window.addEventListener("resize", fit);
+
+  render(true);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+Builda HTML5 SDK 离线快照
+==========================
+SDK 版本: 0.19.4
+随附工具链版本: 0.4.117
+抓取日期: 2026-11-06
+来源: 在空 HTML5 项目中运行 ./.builda-agent/builda sdk install（SDK 产物目录 .builda-agent/sdk/web/）
+
+文件清单
+--------
+builda-sdk.js            76392 字节  sha256 d1b354f62f7780314f1c05487d303a510359a1b75a95e617249b1e01fbe320e5
+builda-sdk.d.ts          20449 字节  sha256 5d788f122d5ee230c0a7b9cb2b85f46dbed14b133ecce2f69165b0810e1915d1
+builda-dev-shell.html    21650 字节  本地测试外壳（builda dev 兜底伺服）
+mic/builda-mic-worker.js  3518 字节  麦克风 PCM 分析 worker
+
+放置位置
+--------
+复制到 HTML5 项目根目录下的 .builda-agent/sdk/web/ 即可；同时写入 .builda-agent/sdk-version = 0.19.4。
+游戏 index.html 的 <head> 必须保留根相对引用 <script src="builda-sdk.js"></script>；
+SDK 文件本身不进上传 zip，正式运行时由 Builda App 按 manifest 从 CDN 注入。
+
+文件名说明
+----------
+builda-sdk.js / builda-sdk.d.ts / builda-dev-shell.html / mic/builda-mic-worker.js 是平台硬编码的运行时文件名，
+改名会导致注入与引用失败，因此保持英文原名；其余目录与文档均用中文命名。
